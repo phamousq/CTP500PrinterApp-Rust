@@ -1,4 +1,5 @@
 use dioxus::prelude::*;
+use dioxus_core::spawn_forever;
 use image::DynamicImage;
 
 use crate::types::{AppEvent, BleCommand, FONT_CHOICES, chars_per_line};
@@ -255,7 +256,7 @@ pub fn App() -> Element {
                     textarea {
                         class: "text-input",
                         style: "{textarea_style}",
-                        placeholder: "Type or paste\ntext to print...",
+                        placeholder: "Type or paste text to print...",
                         rows: "5",
                         value: "{text_input}",
                         oninput: move |e| text_input.set(e.value()),

@@ -10,8 +10,8 @@ path = "src/main.rs"
 
 [dependencies]
 # GUI
-dioxus         = { version = "0.6", features = ["desktop"] }
-dioxus-desktop = "0.6"
+dioxus         = { version = "0.7", features = ["desktop"] }
+dioxus-desktop = "0.7"
 
 # BLE
 btleplug   = "0.11"
