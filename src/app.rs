@@ -192,12 +192,14 @@ pub fn App() -> Element {
             section { class: "card",
                 h2 { class: "section-title", "Text Tools" }
 
-                textarea {
-                    class: "text-input",
-                    placeholder: "Type or paste text to print...",
-                    rows: "5",
-                    value: "{text_input}",
-                    oninput: move |e| text_input.set(e.value()),
+                div { class: "text-input-wrap",
+                    textarea {
+                        class: "text-input",
+                        placeholder: "Type or paste\ntext to print...",
+                        rows: "5",
+                        value: "{text_input}",
+                        oninput: move |e| text_input.set(e.value()),
+                    }
                 }
 
                 button {
@@ -348,6 +350,14 @@ pub fn App() -> Element {
 // ── Embedded CSS ──────────────────────────────────────────────────────────────
 
 const STYLES: &str = r#"
+/* Load the exact system Menlo used by the printer renderer */
+@font-face {
+    font-family: "MenloPrinter";
+    src: url("file:///System/Library/Fonts/Menlo.ttc") format("truetype");
+    font-weight: normal;
+    font-style: normal;
+}
+
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
 body {
@@ -415,17 +425,29 @@ body {
 .battery-text { font-size: 13px; }
 .error-text { font-size: 12px; color: #cc0000; }
 
-/* Text input */
+/* Text input — sized to exactly 21 chars wide at printer font scale */
+.text-input-wrap {
+    /* Centers the fixed-width textarea inside the card */
+    display: flex;
+    justify-content: center;
+}
 .text-input {
-    width: 100%;
-    padding: 8px;
+    /* 21ch = exactly 21 monospace characters at the current font-size.
+       font-size 28px matches the printer's Menlo 28px render scale.
+       box-sizing: content-box so padding does not shrink the text column. */
+    box-sizing: content-box;
+    width: 21ch;
+    padding: 8px 10px;
     border: 1.5px solid #d1d1d6;
     border-radius: 7px;
-    font-family: "Menlo", "Courier New", monospace;
-    font-size: 13px;
-    resize: vertical;
+    font-family: "MenloPrinter", "Menlo", "Courier New", monospace;
+    font-size: 28px;
+    line-height: 1.45;
+    resize: none;
     outline: none;
     transition: border-color 0.15s;
+    /* Prevent the browser from adding extra space for inline elements */
+    display: block;
 }
 .text-input:focus { border-color: #0071e3; }
 
