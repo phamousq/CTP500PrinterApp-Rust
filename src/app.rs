@@ -138,7 +138,7 @@ pub fn App() -> Element {
     let cols = chars_per_line(font_path_str, size as f32);
     // Inline style for the textarea: dynamic font-family, font-size, and width
     let textarea_style = format!(
-        "font-family: {}, monospace; font-size: {}px; width: {}ch;",
+        "font-family: '{}', monospace; font-size: {}px; width: {}ch;",
         css_family, size, cols
     );
 

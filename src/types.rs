@@ -58,13 +58,13 @@ pub struct FontChoice {
 
 /// All monospace fonts offered in the UI, in display order.
 pub const FONT_CHOICES: &[FontChoice] = &[
-    FontChoice { label: "Menlo",          path: "/System/Library/Fonts/Menlo.ttc",                              css_family: "\"MenloPrinter\"" },
-    FontChoice { label: "Monaco",         path: "/System/Library/Fonts/Monaco.ttf",                             css_family: "\"MonacoPrinter\"" },
-    FontChoice { label: "SF Mono",        path: "/System/Library/Fonts/SFNSMono.ttf",                           css_family: "\"SFMonoPrinter\"" },
-    FontChoice { label: "PT Mono",        path: "/System/Library/Fonts/PTMono.ttc",                             css_family: "\"PTMonoPrinter\"" },
-    FontChoice { label: "Courier New",    path: "/System/Library/Fonts/Supplemental/Courier New.ttf",           css_family: "\"CourierNewPrinter\"" },
-    FontChoice { label: "JetBrains Mono", path: "/Users/quintonpham/Library/Fonts/JetBrainsMonoNerdFont-Regular.ttf", css_family: "\"JetBrainsMonoPrinter\"" },
-    FontChoice { label: "Fira Code",      path: "/Users/quintonpham/Library/Fonts/FiraCodeNerdFont-Regular.ttf",     css_family: "\"FiraCodePrinter\"" },
+    FontChoice { label: "Menlo",          path: "/System/Library/Fonts/Menlo.ttc",                              css_family: "MenloPrinter" },
+    FontChoice { label: "Monaco",         path: "/System/Library/Fonts/Monaco.ttf",                             css_family: "MonacoPrinter" },
+    FontChoice { label: "SF Mono",        path: "/System/Library/Fonts/SFNSMono.ttf",                           css_family: "SFMonoPrinter" },
+    FontChoice { label: "PT Mono",        path: "/System/Library/Fonts/PTMono.ttc",                             css_family: "PTMonoPrinter" },
+    FontChoice { label: "Courier New",    path: "/System/Library/Fonts/Supplemental/Courier New.ttf",           css_family: "CourierNewPrinter" },
+    FontChoice { label: "JetBrains Mono", path: "/Users/quintonpham/Library/Fonts/JetBrainsMonoNerdFont-Regular.ttf", css_family: "JetBrainsMonoPrinter" },
+    FontChoice { label: "Fira Code",      path: "/Users/quintonpham/Library/Fonts/FiraCodeNerdFont-Regular.ttf",     css_family: "FiraCodePrinter" },
 ];
 
 /// Compute the number of characters that fit across PRINTER_WIDTH pixels for
