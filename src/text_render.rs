@@ -3,21 +3,19 @@ use image::{DynamicImage, Rgb, RgbImage};
 use imageproc::drawing::draw_text_mut;
 use crate::types::PRINTER_WIDTH;
 
-const FONT_PATH: &str = "/System/Library/Fonts/Menlo.ttc";
-const FONT_SIZE: f32 = 28.0;
 const CANVAS_HEIGHT: u32 = 5000;
 
 /// Render text to a bitmap image at PRINTER_WIDTH, trimmed of trailing whitespace.
 /// Port of Python's `create_text` + `get_wrapped_text` + `trimImage`.
-pub fn render_text_to_image(text: &str) -> Result<DynamicImage, String> {
-    let font_data = std::fs::read(FONT_PATH)
-        .map_err(|e| format!("Failed to read font {}: {}", FONT_PATH, e))?;
+pub fn render_text_to_image(text: &str, font_path: &str, font_size: f32) -> Result<DynamicImage, String> {
+    let font_data = std::fs::read(font_path)
+        .map_err(|e| format!("Failed to read font {}: {}", font_path, e))?;
 
     // FontRef requires a static lifetime; use FontVec instead for owned data
     let font = ab_glyph::FontVec::try_from_vec(font_data)
         .map_err(|e| format!("Failed to parse font: {}", e))?;
 
-    let scale = PxScale::from(FONT_SIZE);
+    let scale = PxScale::from(font_size);
 
     // Word-wrap each line of input text
     let mut wrapped_lines: Vec<String> = Vec::new();

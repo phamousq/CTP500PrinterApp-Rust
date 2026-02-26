@@ -58,8 +58,8 @@ pub async fn ble_task(mut cmd_rx: Receiver<BleCommand>, evt_tx: Sender<AppEvent>
                 }
             }
 
-            BleCommand::PrintText(text) => {
-                match render_text_to_image(&text) {
+            BleCommand::PrintText { text, font_path, font_size } => {
+                match render_text_to_image(&text, &font_path, font_size) {
                     Ok(img) => {
                         if let Some(ref s) = state {
                             print_image(&s.peripheral, &s.write_char, img, &evt_tx).await;
