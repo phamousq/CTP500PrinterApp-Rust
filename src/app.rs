@@ -1,335 +1,479 @@
-use eframe::egui;
+use dioxus::prelude::*;
 use image::DynamicImage;
-use tokio::sync::mpsc::{Sender, Receiver};
 
 use crate::types::{AppEvent, BleCommand};
 
-#[derive(Debug, Clone, Copy, PartialEq)]
-enum Justification {
-    Left,
-    Center,
-    Right,
+// ── Shared state passed into the app via context ──────────────────────────────
+
+pub struct AppState {
+    pub cmd_tx: tokio::sync::mpsc::Sender<BleCommand>,
+    pub evt_rx: tokio::sync::mpsc::Receiver<AppEvent>,
 }
 
-pub struct PrinterApp {
-    // Channel handles
-    cmd_tx: Sender<BleCommand>,
-    evt_rx: Receiver<AppEvent>,
+// ── Root component ────────────────────────────────────────────────────────────
 
-    // Connection state
-    connected: bool,
-    scanning: bool,
-    battery_pct: Option<u8>,
+#[component]
+pub fn App() -> Element {
+    // ── Reactive signals ──────────────────────────────────────────────────────
+    let mut connected = use_signal(|| false);
+    let mut scanning = use_signal(|| false);
+    let mut battery_pct: Signal<Option<u8>> = use_signal(|| None);
+    let mut log_entries: Signal<Vec<String>> = use_signal(Vec::new);
+    let mut text_input = use_signal(String::new);
+    let mut current_image: Signal<Option<DynamicImage>> = use_signal(|| None);
+    // Base64-encoded PNG thumbnail for the WebView <img> tag
+    let mut image_preview_b64: Signal<Option<String>> = use_signal(|| None);
+    let mut printing = use_signal(|| false);
+    let mut print_progress: Signal<Option<(usize, usize)>> = use_signal(|| None);
+    let mut last_error: Signal<Option<String>> = use_signal(|| None);
 
-    // Log
-    log_entries: Vec<String>,
+    // ── Retrieve channels from context ────────────────────────────────────────
+    let state = use_context::<std::sync::Arc<tokio::sync::Mutex<AppState>>>();
 
-    // Text printing
-    text_input: String,
-    justification: Justification,
-
-    // Image printing
-    current_image: Option<DynamicImage>,
-    image_preview_texture: Option<egui::TextureHandle>,
-
-    // Print progress
-    printing: bool,
-    print_progress: Option<(usize, usize)>,
-
-    // Error display
-    last_error: Option<String>,
-}
-
-impl PrinterApp {
-    pub fn new(cmd_tx: Sender<BleCommand>, evt_rx: Receiver<AppEvent>) -> Self {
-        Self {
-            cmd_tx,
-            evt_rx,
-            connected: false,
-            scanning: false,
-            battery_pct: None,
-            log_entries: Vec::new(),
-            text_input: String::new(),
-            justification: Justification::Left,
-            current_image: None,
-            image_preview_texture: None,
-            printing: false,
-            print_progress: None,
-            last_error: None,
-        }
-    }
-
-    fn push_log(&mut self, message: String) {
-        let ts = chrono::Local::now().format("%H:%M:%S").to_string();
-        self.log_entries.push(format!("[{}] {}", ts, message));
-        // Keep the log from growing unbounded
-        if self.log_entries.len() > 200 {
-            self.log_entries.drain(..50);
-        }
-    }
-
-    fn handle_event(&mut self, event: AppEvent, ctx: &egui::Context) {
-        match event {
-            AppEvent::Log(msg) => self.push_log(msg),
-            AppEvent::Connected => {
-                self.connected = true;
-                self.scanning = false;
-                self.push_log("Connected".into());
-            }
-            AppEvent::Disconnected => {
-                self.connected = false;
-                self.scanning = false;
-                self.battery_pct = None;
-                self.printing = false;
-                self.print_progress = None;
-            }
-            AppEvent::BatteryLevel(pct) => {
-                self.battery_pct = Some(pct);
-            }
-            AppEvent::ScanStarted => {
-                self.scanning = true;
-            }
-            AppEvent::PrintProgress { sent, total } => {
-                self.print_progress = Some((sent, total));
-                self.printing = true;
-            }
-            AppEvent::PrintComplete => {
-                self.printing = false;
-                self.print_progress = None;
-                self.push_log("Print complete".into());
-            }
-            AppEvent::Error(e) => {
-                self.last_error = Some(e.clone());
-                self.push_log(format!("Error: {}", e));
-                self.printing = false;
-                self.scanning = false;
-            }
-        }
-        ctx.request_repaint();
-    }
-
-    fn render_bluetooth_section(&mut self, ui: &mut egui::Ui) {
-        ui.label(egui::RichText::new("Bluetooth tools").strong());
-
-        ui.horizontal(|ui| {
-            if !self.connected {
-                let btn_text = if self.scanning { "Scanning..." } else { "Scan & Connect" };
-                if ui.add_enabled(!self.scanning, egui::Button::new(btn_text).min_size(egui::vec2(120.0, 40.0))).clicked() {
-                    self.cmd_tx.try_send(BleCommand::ScanAndConnect).ok();
-                    self.scanning = true;
-                    self.last_error = None;
-                }
-            } else {
-                if ui.add(egui::Button::new("Disconnect").min_size(egui::vec2(120.0, 40.0))).clicked() {
-                    self.cmd_tx.try_send(BleCommand::Disconnect).ok();
+    // ── BLE event pump: drains AppEvent channel and writes to signals ─────────
+    // spawn_forever keeps this alive for the lifetime of the app.
+    use_hook(|| {
+        let state = state.clone();
+        spawn_forever(async move {
+            loop {
+                let event = {
+                    let mut s = state.lock().await;
+                    s.evt_rx.recv().await
+                };
+                match event {
+                    Some(AppEvent::Log(msg)) => {
+                        let ts = chrono::Local::now().format("%H:%M:%S").to_string();
+                        let entry = format!("[{}] {}", ts, msg);
+                        log_entries.with_mut(|v| {
+                            v.push(entry);
+                            if v.len() > 200 { v.drain(..50); }
+                        });
+                    }
+                    Some(AppEvent::Connected) => {
+                        connected.set(true);
+                        scanning.set(false);
+                        let ts = chrono::Local::now().format("%H:%M:%S").to_string();
+                        log_entries.with_mut(|v| v.push(format!("[{}] Connected", ts)));
+                    }
+                    Some(AppEvent::Disconnected) => {
+                        connected.set(false);
+                        scanning.set(false);
+                        battery_pct.set(None);
+                        printing.set(false);
+                        print_progress.set(None);
+                    }
+                    Some(AppEvent::BatteryLevel(pct)) => {
+                        battery_pct.set(Some(pct));
+                    }
+                    Some(AppEvent::ScanStarted) => {
+                        scanning.set(true);
+                    }
+                    Some(AppEvent::PrintProgress { sent, total }) => {
+                        print_progress.set(Some((sent, total)));
+                        printing.set(true);
+                    }
+                    Some(AppEvent::PrintComplete) => {
+                        printing.set(false);
+                        print_progress.set(None);
+                        let ts = chrono::Local::now().format("%H:%M:%S").to_string();
+                        log_entries.with_mut(|v| v.push(format!("[{}] Print complete", ts)));
+                    }
+                    Some(AppEvent::Error(e)) => {
+                        last_error.set(Some(e.clone()));
+                        let ts = chrono::Local::now().format("%H:%M:%S").to_string();
+                        log_entries.with_mut(|v| v.push(format!("[{}] Error: {}", ts, e)));
+                        printing.set(false);
+                        scanning.set(false);
+                    }
+                    None => break, // channel closed
                 }
             }
         });
+    });
 
-        // Status indicator
-        let (status_text, color) = if self.scanning {
-            ("\u{27F3} Scanning...", egui::Color32::from_rgb(0, 102, 204))
-        } else if self.connected {
-            ("\u{25CF} Connected", egui::Color32::from_rgb(0, 170, 0))
-        } else {
-            ("\u{25CF} Disconnected", egui::Color32::from_rgb(204, 0, 0))
-        };
-        ui.colored_label(color, status_text);
+    // ── Derived display values ────────────────────────────────────────────────
+    let status_text = if *scanning.read() {
+        "⟳ Scanning..."
+    } else if *connected.read() {
+        "● Connected"
+    } else {
+        "● Disconnected"
+    };
 
-        // Battery indicator
-        if let Some(pct) = self.battery_pct {
-            let color = if pct > 50 {
-                egui::Color32::from_rgb(0, 170, 0)
-            } else if pct > 20 {
-                egui::Color32::from_rgb(204, 119, 0)
-            } else {
-                egui::Color32::from_rgb(204, 0, 0)
-            };
-            ui.colored_label(color, format!("Battery: {}%", pct));
-        }
+    let status_color = if *scanning.read() {
+        "#0066cc"
+    } else if *connected.read() {
+        "#00aa00"
+    } else {
+        "#cc0000"
+    };
 
-        // Error display
-        if let Some(ref err) = self.last_error.clone() {
-            ui.colored_label(egui::Color32::RED, format!("Error: {}", err));
-        }
-    }
+    let battery_display = (*battery_pct.read()).map(|pct| {
+        let color = if pct > 50 { "#00aa00" } else if pct > 20 { "#cc7700" } else { "#cc0000" };
+        (pct, color)
+    });
 
-    fn render_text_section(&mut self, ui: &mut egui::Ui) {
-        ui.label(egui::RichText::new("Text tools").strong());
+    let can_print_text = *connected.read()
+        && !text_input.read().trim().is_empty()
+        && !*printing.read();
 
-        // Justification radio buttons (display only — rendering handles it via word-wrap)
-        ui.horizontal(|ui| {
-            ui.radio_value(&mut self.justification, Justification::Left, "left");
-            ui.radio_value(&mut self.justification, Justification::Center, "center");
-            ui.radio_value(&mut self.justification, Justification::Right, "right");
-        });
+    let can_print_image = *connected.read()
+        && current_image.read().is_some()
+        && !*printing.read();
 
-        // Text input area
-        egui::ScrollArea::vertical()
-            .max_height(100.0)
-            .id_salt("text_input")
-            .show(ui, |ui| {
-                ui.add(egui::TextEdit::multiline(&mut self.text_input)
-                    .desired_width(f32::INFINITY)
-                    .desired_rows(5));
-            });
+    let progress_display = *print_progress.read();
 
-        // Load text file button
-        if ui.add(egui::Button::new("Select a text file").min_size(egui::vec2(f32::INFINITY, 30.0))).clicked() {
-            if let Some(path) = rfd::FileDialog::new()
-                .add_filter("Text files", &["txt"])
-                .add_filter("All files", &["*"])
-                .pick_file()
-            {
-                match std::fs::read_to_string(&path) {
-                    Ok(content) => {
-                        self.text_input = content;
-                    }
-                    Err(e) => {
-                        self.last_error = Some(format!("Failed to read file: {}", e));
-                    }
-                }
-            }
-        }
+    // ── Clones for event handlers ─────────────────────────────────────────────
+    let state_ble = state.clone();
+    let state_ble2 = state.clone();
+    let state_print_text = state.clone();
+    let state_print_image = state.clone();
 
-        // Print text button
-        let can_print_text = self.connected && !self.text_input.trim().is_empty() && !self.printing;
-        if ui.add_enabled(can_print_text, egui::Button::new("Print your text!").min_size(egui::vec2(f32::INFINITY, 40.0))).clicked() {
-            let text = self.text_input.clone();
-            self.cmd_tx.try_send(BleCommand::PrintText(text)).ok();
-            self.printing = true;
-            self.last_error = None;
-        }
-    }
+    rsx! {
+        style { {STYLES} }
 
-    fn render_image_section(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
-        ui.label(egui::RichText::new("Image tools").strong());
+        div { class: "container",
 
-        // Image preview canvas
-        if let Some(ref texture) = self.image_preview_texture {
-            let available = ui.available_width();
-            let size = egui::vec2(available.min(300.0), 100.0);
-            ui.add(egui::Image::new(texture).fit_to_exact_size(size));
-        } else {
-            // Placeholder white box
-            let (rect, _) = ui.allocate_exact_size(egui::vec2(300.0, 100.0), egui::Sense::hover());
-            ui.painter().rect_filled(rect, 0.0, egui::Color32::WHITE);
-            ui.painter().rect_stroke(rect, 0.0, egui::Stroke::new(1.0, egui::Color32::GRAY), egui::StrokeKind::Middle);
-        }
+            // ── Bluetooth section ─────────────────────────────────────────────
+            section { class: "card",
+                h2 { class: "section-title", "Bluetooth Tools" }
 
-        // Load image file button
-        if ui.add(egui::Button::new("Select an image file").min_size(egui::vec2(f32::INFINITY, 30.0))).clicked() {
-            if let Some(path) = rfd::FileDialog::new()
-                .add_filter("Images", &["png", "jpg", "jpeg", "bmp"])
-                .add_filter("All files", &["*"])
-                .pick_file()
-            {
-                match image::open(&path) {
-                    Ok(img) => {
-                        // Build thumbnail texture for preview
-                        let thumb = img.thumbnail(300, 100);
-                        let rgb = thumb.to_rgb8();
-                        let (w, h) = rgb.dimensions();
-                        let pixels: Vec<egui::Color32> = rgb.pixels()
-                            .map(|p| egui::Color32::from_rgb(p[0], p[1], p[2]))
-                            .collect();
-                        let color_image = egui::ColorImage {
-                            size: [w as usize, h as usize],
-                            pixels,
-                            source_size: egui::vec2(w as f32, h as f32),
-                        };
-                        self.image_preview_texture = Some(
-                            ctx.load_texture("image_preview", color_image, egui::TextureOptions::default())
-                        );
-                        self.current_image = Some(img);
-                    }
-                    Err(e) => {
-                        self.last_error = Some(format!("Failed to open image: {}", e));
-                    }
-                }
-            }
-        }
-
-        // Print image button
-        let can_print_image = self.connected && self.current_image.is_some() && !self.printing;
-        if ui.add_enabled(can_print_image, egui::Button::new("Print your image!").min_size(egui::vec2(f32::INFINITY, 40.0))).clicked() {
-            if let Some(ref img) = self.current_image {
-                self.cmd_tx.try_send(BleCommand::PrintImage(img.clone())).ok();
-                self.printing = true;
-                self.last_error = None;
-            }
-        }
-
-        // Print progress
-        if let Some((sent, total)) = self.print_progress {
-            ui.label(format!("Sending... {}/{} bytes", sent, total));
-            let progress = sent as f32 / total as f32;
-            ui.add(egui::ProgressBar::new(progress));
-        }
-    }
-
-    fn render_log_section(&self, ui: &mut egui::Ui) {
-        ui.label(egui::RichText::new("Activity log").strong());
-
-        let log_bg = egui::Color32::from_rgb(30, 30, 30);
-        let log_fg = egui::Color32::from_rgb(212, 212, 212);
-
-        egui::Frame::new()
-            .fill(log_bg)
-            .inner_margin(egui::Margin::same(4))
-            .show(ui, |ui| {
-                egui::ScrollArea::vertical()
-                    .max_height(150.0)
-                    .stick_to_bottom(true)
-                    .id_salt("activity_log")
-                    .show(ui, |ui| {
-                        for entry in &self.log_entries {
-                            ui.colored_label(log_fg, egui::RichText::new(entry).monospace());
+                div { class: "btn-row",
+                    if !*connected.read() {
+                        button {
+                            class: "btn btn-primary",
+                            disabled: *scanning.read(),
+                            onclick: move |_| {
+                                let state = state_ble.clone();
+                                scanning.set(true);
+                                last_error.set(None);
+                                spawn(async move {
+                                    let s = state.lock().await;
+                                    s.cmd_tx.send(BleCommand::ScanAndConnect).await.ok();
+                                });
+                            },
+                            if *scanning.read() { "Scanning..." } else { "Scan & Connect" }
                         }
-                    });
-            });
-    }
-}
+                    } else {
+                        button {
+                            class: "btn btn-secondary",
+                            onclick: move |_| {
+                                let state = state_ble2.clone();
+                                spawn(async move {
+                                    let s = state.lock().await;
+                                    s.cmd_tx.send(BleCommand::Disconnect).await.ok();
+                                });
+                            },
+                            "Disconnect"
+                        }
+                    }
+                }
 
-impl eframe::App for PrinterApp {
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        // Drain all pending events from BLE thread
-        let events: Vec<AppEvent> = {
-            let mut collected = Vec::new();
-            while let Ok(event) = self.evt_rx.try_recv() {
-                collected.push(event);
+                p {
+                    class: "status-text",
+                    style: "color: {status_color}",
+                    "{status_text}"
+                }
+
+                if let Some((pct, color)) = battery_display {
+                    p {
+                        class: "battery-text",
+                        style: "color: {color}",
+                        "Battery: {pct}%"
+                    }
+                }
+
+                if let Some(ref err) = *last_error.read() {
+                    p { class: "error-text", "Error: {err}" }
+                }
             }
-            collected
-        };
-        for event in events {
-            self.handle_event(event, ctx);
+
+            // ── Text tools section ────────────────────────────────────────────
+            section { class: "card",
+                h2 { class: "section-title", "Text Tools" }
+
+                textarea {
+                    class: "text-input",
+                    placeholder: "Type or paste text to print...",
+                    rows: "5",
+                    value: "{text_input}",
+                    oninput: move |e| text_input.set(e.value()),
+                }
+
+                button {
+                    class: "btn btn-outline",
+                    onclick: move |_| {
+                        // Use rfd for native file picker (called on the Tokio thread via spawn)
+                        spawn(async move {
+                            if let Some(path) = rfd::AsyncFileDialog::new()
+                                .add_filter("Text files", &["txt"])
+                                .add_filter("All files", &["*"])
+                                .pick_file()
+                                .await
+                            {
+                                match std::fs::read_to_string(path.path()) {
+                                    Ok(content) => text_input.set(content),
+                                    Err(e) => last_error.set(Some(format!("Failed to read file: {}", e))),
+                                }
+                            }
+                        });
+                    },
+                    "Select a text file"
+                }
+
+                button {
+                    class: "btn btn-primary",
+                    disabled: !can_print_text,
+                    onclick: move |_| {
+                        let state = state_print_text.clone();
+                        let text = text_input.read().clone();
+                        printing.set(true);
+                        last_error.set(None);
+                        spawn(async move {
+                            let s = state.lock().await;
+                            s.cmd_tx.send(BleCommand::PrintText(text)).await.ok();
+                        });
+                    },
+                    "Print your text!"
+                }
+            }
+
+            // ── Image tools section ───────────────────────────────────────────
+            section { class: "card",
+                h2 { class: "section-title", "Image Tools" }
+
+                div { class: "image-preview",
+                    if let Some(ref b64) = *image_preview_b64.read() {
+                        img {
+                            src: "data:image/png;base64,{b64}",
+                            class: "preview-img",
+                            alt: "Image preview",
+                        }
+                    } else {
+                        div { class: "preview-placeholder", "No image loaded" }
+                    }
+                }
+
+                button {
+                    class: "btn btn-outline",
+                    onclick: move |_| {
+                        spawn(async move {
+                            if let Some(file) = rfd::AsyncFileDialog::new()
+                                .add_filter("Images", &["png", "jpg", "jpeg", "bmp"])
+                                .add_filter("All files", &["*"])
+                                .pick_file()
+                                .await
+                            {
+                                match image::open(file.path()) {
+                                    Ok(img) => {
+                                        // Build a base64 PNG thumbnail for the WebView preview
+                                        let thumb = img.thumbnail(300, 100);
+                                        let mut buf = Vec::new();
+                                        if thumb.write_to(
+                                            &mut std::io::Cursor::new(&mut buf),
+                                            image::ImageFormat::Png,
+                                        ).is_ok() {
+                                            use base64::Engine;
+                                            let b64 = base64::engine::general_purpose::STANDARD.encode(&buf);
+                                            image_preview_b64.set(Some(b64));
+                                        }
+                                        current_image.set(Some(img));
+                                    }
+                                    Err(e) => {
+                                        last_error.set(Some(format!("Failed to open image: {}", e)));
+                                    }
+                                }
+                            }
+                        });
+                    },
+                    "Select an image file"
+                }
+
+                button {
+                    class: "btn btn-primary",
+                    disabled: !can_print_image,
+                    onclick: move |_| {
+                        let state = state_print_image.clone();
+                        if let Some(img) = current_image.read().clone() {
+                            printing.set(true);
+                            last_error.set(None);
+                            spawn(async move {
+                                let s = state.lock().await;
+                                s.cmd_tx.send(BleCommand::PrintImage(img)).await.ok();
+                            });
+                        }
+                    },
+                    "Print your image!"
+                }
+
+                if let Some((sent, total)) = progress_display {
+                    div { class: "progress-wrap",
+                        p { class: "progress-label",
+                            "Sending... {sent}/{total} bytes"
+                        }
+                        div { class: "progress-bar-bg",
+                            div {
+                                class: "progress-bar-fill",
+                                style: "width: {sent as f32 / total as f32 * 100.0:.1}%",
+                            }
+                        }
+                    }
+                }
+            }
+
+            // ── Activity log section ──────────────────────────────────────────
+            section { class: "card",
+                h2 { class: "section-title", "Activity Log" }
+                div { class: "log-box",
+                    id: "log-scroll",
+                    for entry in log_entries.read().iter() {
+                        p { class: "log-entry", "{entry}" }
+                    }
+                }
+            }
         }
 
-        // Keep repainting while active operations are in progress
-        if self.scanning || self.printing {
-            ctx.request_repaint_after(std::time::Duration::from_millis(100));
+        // Auto-scroll log to bottom whenever entries change
+        script {
+            r#"
+            (function() {{
+                var el = document.getElementById('log-scroll');
+                if (el) el.scrollTop = el.scrollHeight;
+            }})();
+            "#
         }
-
-        egui::CentralPanel::default().show(ctx, |ui| {
-            egui::ScrollArea::vertical().show(ui, |ui| {
-                self.render_bluetooth_section(ui);
-                ui.separator();
-                self.render_text_section(ui);
-                ui.separator();
-                // Need to pass ctx into render_image_section for texture creation
-                // We do this by temporarily cloning ctx
-                let ctx_clone = ctx.clone();
-                self.render_image_section(ui, &ctx_clone);
-                ui.separator();
-                self.render_log_section(ui);
-            });
-        });
-    }
-
-    fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
-        // Send disconnect command on window close
-        self.cmd_tx.try_send(BleCommand::Disconnect).ok();
-        // Give the BLE thread a moment to disconnect
-        std::thread::sleep(std::time::Duration::from_millis(500));
     }
 }
+
+// ── Embedded CSS ──────────────────────────────────────────────────────────────
+
+const STYLES: &str = r#"
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+    font-family: -apple-system, BlinkMacSystemFont, "Helvetica Neue", sans-serif;
+    font-size: 14px;
+    background: #f0f0f0;
+    color: #1a1a1a;
+    min-height: 100vh;
+}
+
+.container {
+    max-width: 520px;
+    margin: 0 auto;
+    padding: 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+.card {
+    background: #ffffff;
+    border-radius: 10px;
+    padding: 14px;
+    box-shadow: 0 1px 4px rgba(0,0,0,0.10);
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.section-title {
+    font-size: 13px;
+    font-weight: 600;
+    color: #555;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    margin-bottom: 2px;
+}
+
+/* Buttons */
+.btn {
+    display: block;
+    width: 100%;
+    padding: 10px 16px;
+    border: none;
+    border-radius: 7px;
+    font-size: 14px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: opacity 0.15s, background 0.15s;
+}
+.btn:disabled { opacity: 0.45; cursor: not-allowed; }
+.btn-primary  { background: #0071e3; color: #fff; }
+.btn-primary:hover:not(:disabled)  { background: #0064cc; }
+.btn-secondary { background: #e5e5ea; color: #1a1a1a; }
+.btn-secondary:hover:not(:disabled) { background: #d1d1d6; }
+.btn-outline  { background: transparent; color: #0071e3;
+                border: 1.5px solid #0071e3; }
+.btn-outline:hover:not(:disabled)  { background: #e8f0fc; }
+
+.btn-row { display: flex; gap: 8px; }
+.btn-row .btn { flex: 1; }
+
+/* Status */
+.status-text { font-size: 13px; font-weight: 500; }
+.battery-text { font-size: 13px; }
+.error-text { font-size: 12px; color: #cc0000; }
+
+/* Text input */
+.text-input {
+    width: 100%;
+    padding: 8px;
+    border: 1.5px solid #d1d1d6;
+    border-radius: 7px;
+    font-family: "Menlo", "Courier New", monospace;
+    font-size: 13px;
+    resize: vertical;
+    outline: none;
+    transition: border-color 0.15s;
+}
+.text-input:focus { border-color: #0071e3; }
+
+/* Image preview */
+.image-preview {
+    width: 100%;
+    height: 110px;
+    border: 1.5px solid #d1d1d6;
+    border-radius: 7px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    overflow: hidden;
+    background: #fafafa;
+}
+.preview-img { max-width: 100%; max-height: 108px; object-fit: contain; }
+.preview-placeholder { color: #aaa; font-size: 13px; }
+
+/* Progress */
+.progress-wrap { display: flex; flex-direction: column; gap: 4px; }
+.progress-label { font-size: 12px; color: #555; }
+.progress-bar-bg {
+    width: 100%; height: 6px;
+    background: #e5e5ea; border-radius: 3px; overflow: hidden;
+}
+.progress-bar-fill {
+    height: 100%;
+    background: #0071e3;
+    border-radius: 3px;
+    transition: width 0.2s;
+}
+
+/* Log */
+.log-box {
+    background: #1e1e1e;
+    border-radius: 7px;
+    padding: 8px 10px;
+    height: 160px;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+}
+.log-entry {
+    font-family: "Menlo", "Courier New", monospace;
+    font-size: 11px;
+    color: #d4d4d4;
+    white-space: pre-wrap;
+    word-break: break-all;
+}
+"#;
