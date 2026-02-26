@@ -433,7 +433,7 @@ const STYLES: &str = r#"
 }
 @font-face {
     font-family: "PTMonoPrinter";
-    src: url("file:///System/Library/Fonts/PTMono.ttc") format("truetype");
+    src: url("file:///System/Library/Fonts/Supplemental/PTMono.ttc") format("truetype");
     font-weight: normal; font-style: normal;
 }
 @font-face {

@@ -1,5 +1,6 @@
 use image::DynamicImage;
-use std::sync::OnceLock;
+use std::sync::{OnceLock, Mutex};
+use std::collections::HashMap;
 use regex::Regex;
 use ab_glyph::{Font, FontVec, PxScale, ScaleFont};
 
@@ -61,33 +62,44 @@ pub const FONT_CHOICES: &[FontChoice] = &[
     FontChoice { label: "Menlo",          path: "/System/Library/Fonts/Menlo.ttc",                              css_family: "MenloPrinter" },
     FontChoice { label: "Monaco",         path: "/System/Library/Fonts/Monaco.ttf",                             css_family: "MonacoPrinter" },
     FontChoice { label: "SF Mono",        path: "/System/Library/Fonts/SFNSMono.ttf",                           css_family: "SFMonoPrinter" },
-    FontChoice { label: "PT Mono",        path: "/System/Library/Fonts/PTMono.ttc",                             css_family: "PTMonoPrinter" },
+    FontChoice { label: "PT Mono",        path: "/System/Library/Fonts/Supplemental/PTMono.ttc",               css_family: "PTMonoPrinter" },
     FontChoice { label: "Courier New",    path: "/System/Library/Fonts/Supplemental/Courier New.ttf",           css_family: "CourierNewPrinter" },
     FontChoice { label: "JetBrains Mono", path: "/Users/quintonpham/Library/Fonts/JetBrainsMonoNerdFont-Regular.ttf", css_family: "JetBrainsMonoPrinter" },
     FontChoice { label: "Fira Code",      path: "/Users/quintonpham/Library/Fonts/FiraCodeNerdFont-Regular.ttf",     css_family: "FiraCodePrinter" },
 ];
 
+// Cache of loaded FontVec keyed by font path, so we don't re-read from disk on every render.
+static FONT_CACHE: OnceLock<Mutex<HashMap<&'static str, FontVec>>> = OnceLock::new();
+
+fn font_cache() -> &'static Mutex<HashMap<&'static str, FontVec>> {
+    FONT_CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
 /// Compute the number of characters that fit across PRINTER_WIDTH pixels for
 /// a given font file and point size.  Uses the same ab_glyph `h_advance` path
 /// as `text_render::get_wrapped_text` so the textarea width exactly matches
-/// what will be printed.
-pub fn chars_per_line(font_path: &str, font_size: f32) -> u32 {
-    let font_data = match std::fs::read(font_path) {
-        Ok(d) => d,
-        Err(_) => return 21, // graceful fallback
-    };
-    let font = match FontVec::try_from_vec(font_data) {
-        Ok(f) => f,
-        Err(_) => return 21,
-    };
+/// what will be printed on the 384px-wide printer.
+///
+/// The font file is read once and cached; subsequent calls with the same path
+/// only pay the cost of a lock + glyph advance lookup.
+pub fn chars_per_line(font_path: &'static str, font_size: f32) -> u32 {
+    let mut cache = font_cache().lock().unwrap();
+    if !cache.contains_key(font_path) {
+        match std::fs::read(font_path).and_then(|d| {
+            FontVec::try_from_vec(d).map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
+        }) {
+            Ok(font) => { cache.insert(font_path, font); }
+            Err(_) => return 26, // fallback: Menlo@28px measured value
+        }
+    }
+    let font = &cache[font_path];
     let scale = PxScale::from(font_size);
     let scaled = font.as_scaled(scale);
-    // Use '0' (the reference glyph for the CSS `ch` unit) as the representative width
+    // '0' is the reference glyph for the CSS `ch` unit — use it so the
+    // computed column count matches the CSS width:{n}ch on the textarea.
     let glyph_id = scaled.glyph_id('0');
     let advance = scaled.h_advance(glyph_id);
-    if advance <= 0.0 {
-        return 21;
-    }
+    if advance <= 0.0 { return 26; }
     (PRINTER_WIDTH as f32 / advance).floor() as u32
 }
 
