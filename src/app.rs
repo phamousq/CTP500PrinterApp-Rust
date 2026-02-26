@@ -2,7 +2,7 @@ use dioxus::prelude::*;
 use dioxus_core::spawn_forever;
 use image::DynamicImage;
 
-use crate::types::{AppEvent, BleCommand, FONT_CHOICES, chars_per_line};
+use crate::types::{chars_per_line, AppEvent, BleCommand, FONT_CHOICES};
 
 // ── Shared state passed into the app via context ──────────────────────────────
 
@@ -52,7 +52,9 @@ pub fn App() -> Element {
                         let entry = format!("[{}] {}", ts, msg);
                         log_entries.with_mut(|v| {
                             v.push(entry);
-                            if v.len() > 200 { v.drain(..50); }
+                            if v.len() > 200 {
+                                v.drain(..50);
+                            }
                         });
                     }
                     Some(AppEvent::Connected) => {
@@ -115,17 +117,20 @@ pub fn App() -> Element {
     };
 
     let battery_display = (*battery_pct.read()).map(|pct| {
-        let color = if pct > 50 { "#00aa00" } else if pct > 20 { "#cc7700" } else { "#cc0000" };
+        let color = if pct > 50 {
+            "#00aa00"
+        } else if pct > 20 {
+            "#cc7700"
+        } else {
+            "#cc0000"
+        };
         (pct, color)
     });
 
-    let can_print_text = *connected.read()
-        && !text_input.read().trim().is_empty()
-        && !*printing.read();
+    let can_print_text =
+        *connected.read() && !text_input.read().trim().is_empty() && !*printing.read();
 
-    let can_print_image = *connected.read()
-        && current_image.read().is_some()
-        && !*printing.read();
+    let can_print_image = *connected.read() && current_image.read().is_some() && !*printing.read();
 
     let progress_display = *print_progress.read();
 
